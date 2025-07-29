@@ -1,10 +1,18 @@
 "use client"
 import { MessageCircle, Scale, Users, Car, Briefcase, Heart, Building, Phone } from "lucide-react"
+import type React from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input" // Import Input component
 import Link from "next/link"
+import { useState } from "react" // Import useState
 
 export default function HomePage() {
+  const [email, setEmail] = useState("")
+  const [message, setMessage] = useState("")
+  const [isSuccess, setIsSuccess] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
+
   const sectors = [
     {
       id: "labor",
@@ -50,6 +58,39 @@ export default function HomePage() {
     },
   ]
 
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setIsLoading(true)
+    setMessage("")
+
+    try {
+      const response = await fetch("/api/save-user", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email }),
+      })
+
+      const data = await response.json()
+
+      if (response.ok) {
+        setIsSuccess(true)
+        setMessage(data.message)
+        setEmail("") // Clear email on success
+      } else {
+        setIsSuccess(false)
+        setMessage(data.message || "حدث خطأ غير معروف.")
+      }
+    } catch (error) {
+      console.error("Failed to submit email:", error)
+      setIsSuccess(false)
+      setMessage("حدث خطأ في الاتصال بالخادم.")
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-green-50 to-emerald-100" dir="rtl">
       {/* Header */}
@@ -65,7 +106,7 @@ export default function HomePage() {
                 الرئيسية
               </Link>
               <Link href="/chat" className="text-gray-700 hover:text-green-600">
-                المساعد الذكي
+                استشارة قانونية
               </Link>
               <Link href="/sectors" className="text-gray-700 hover:text-green-600">
                 القطاعات
@@ -171,6 +212,31 @@ export default function HomePage() {
               </Button>
             </Link>
           </div>
+        </div>
+      </section>
+
+      {/* Email Registration Section */}
+      <section className="py-16 px-4 bg-gray-100">
+        <div className="max-w-2xl mx-auto text-center">
+          <h3 className="text-3xl font-bold text-gray-900 mb-6">اشترك لتصلك آخر التحديثات القانونية</h3>
+          <p className="text-lg text-gray-600 mb-8">ابقَ على اطلاع دائم بآخر التغييرات في الأنظمة والقوانين السعودية.</p>
+          <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-4 max-w-md mx-auto">
+            <Input
+              type="email"
+              placeholder="أدخل بريدك الإلكتروني"
+              className="flex-1 text-right"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              dir="rtl"
+            />
+            <Button type="submit" className="bg-green-600 hover:bg-green-700" disabled={isLoading}>
+              {isLoading ? "جاري الإرسال..." : "اشترك الآن"}
+            </Button>
+          </form>
+          {message && (
+            <p className={`mt-4 text-lg ${message.includes("نجاح") ? "text-green-600" : "text-red-600"}`}>{message}</p>
+          )}
         </div>
       </section>
 

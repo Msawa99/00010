@@ -6,10 +6,10 @@ import "./globals.css"
 const inter = Inter({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
-  title: "اعرف حقوقك - المساعد القانوني الذكي",
+  title: "اعرف حقوقك - استشارة قانونية",
   description:
     "منصة لتقديم الاستشارات القانونية ومساعدة المواطنين والمقيمين في فهم حقوقهم وواجباتهم وفقاً للأنظمة السعودية",
-    generator: 'v0.dev'
+  generator: "v0.dev",
 }
 
 export default function RootLayout({

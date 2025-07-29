@@ -1,54 +1,21 @@
-import { type NextRequest, NextResponse } from "next/server"
+import { NextResponse, type NextRequest } from "next/server"
+import { createServerClient } from "@/lib/supabase/server"
+import { generateText } from "ai"
+import { openai } from "@ai-sdk/openai"
+import { cookies } from "next/headers"
+
+// Define the LegalArticle type
+type LegalArticle = {
+  id: number
+  title: string
+  content: string
+  embedding: number[] | null // Assuming embedding can be null if not present
+}
 
 // مفتاح OpenRouter مع OpenAI
-const OPENROUTER_API_KEY = "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"
+const OPENROUTER_API_KEY =
+  process.env.OPENROUTER_API_KEY || "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"
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-
-// قاعدة بيانات المواد القانونية المحسنة
-const legalDatabase = {
-  labor: {
-    "ساعات العمل": {
-      article: "المادة 97",
-      content: "لا يجوز تشغيل العامل أكثر من ثماني ساعات في اليوم الواحد أو ثمان وأربعين ساعة في الأسبوع",
-      relatedArticles: ["المادة 98", "المادة 99"],
-    },
-    الراحة: {
-      article: "المادة 98",
-      content: "يجب إعطاء العامل فترة راحة لا تقل عن نصف ساعة خلال فترة العمل إذا زادت عن خمس ساعات متتالية",
-      relatedArticles: ["المادة 97", "المادة 100"],
-    },
-    "العمل الإضافي": {
-      article: "المادة 99",
-      content:
-        "إذا اقتضت ظروف العمل تشغيل العامل ساعات إضافية، وجب ألا تزيد على ثلاث ساعات في اليوم، وأن يؤدى له أجر إضافي قدره 150% من أجره الأساسي",
-      relatedArticles: ["المادة 97", "المادة 98"],
-    },
-    الإجازات: {
-      article: "المادة 109",
-      content: "للعامل الحق في إجازة سنوية مدفوعة الأجر لا تقل عن 21 يوماً إذا أمضى في الخدمة سنة كاملة",
-      relatedArticles: ["المادة 110", "المادة 111"],
-    },
-  },
-  health: {
-    "حقوق المريض": {
-      article: "المادة 5",
-      content: "للمريض الحق في الحصول على الرعاية الصحية المناسبة والعلاج اللازم",
-      relatedArticles: ["المادة 6", "المادة 7"],
-    },
-    "التأمين الصحي": {
-      article: "المادة 12",
-      content: "يحق للمؤمن عليه الحصول على الخدمات الصحية المشمولة بالتأمين دون تحمل أي رسوم إضافية",
-      relatedArticles: ["المادة 13", "المادة 14"],
-    },
-  },
-  traffic: {
-    "رخصة القيادة": {
-      article: "المادة 15",
-      content: "يشترط للحصول على رخصة قيادة المركبات أن يكون طالب الرخصة قد أتم الثامنة عشرة من عمره",
-      relatedArticles: ["المادة 16", "المادة 17"],
-    },
-  },
-}
 
 const officialLinks = {
   labor: [
@@ -79,146 +46,48 @@ const officialLinks = {
   ],
 }
 
-export async function POST(request: NextRequest) {
-  try {
-    const { message } = await request.json()
+// Function to analyze the question and find relevant legal articles
+async function analyzeQuestion(question: string): Promise<any[]> {
+  const supabase = getSupabaseServerClient()
 
-    if (!message || message.trim().length === 0) {
-      return NextResponse.json({
-        response: "يرجى كتابة سؤالك للحصول على المساعدة.",
-        articles: [],
-        links: [],
-      })
-    }
+  // Simple keyword matching for demonstration.
+  // In a real application, you'd use more advanced NLP/embedding search.
+  const keywords = question.split(/\s+/).filter((word) => word.length > 2) // Basic tokenization
 
-    // تحليل السؤال لتحديد القطاع والموضوع
-    const analysis = analyzeQuestion(message)
-
-    // إنشاء الرد باستخدام OpenRouter + OpenAI
-    const aiResponse = await generateOpenAIResponse(message, analysis)
-
-    const response = {
-      response: aiResponse,
-      articles: analysis.articles,
-      links: analysis.links,
-    }
-
-    return NextResponse.json(response)
-  } catch (error) {
-    console.error("Error in chat API:", error)
-
-    // في حالة الخطأ، استخدم رد محلي
-    try {
-      const { message } = await request.json()
-      const analysis = analyzeQuestion(message)
-      const localResponse = getDetailedLocalResponse(message, analysis)
-
-      return NextResponse.json({
-        response: localResponse,
-        articles: analysis.articles,
-        links: analysis.links,
-      })
-    } catch {
-      return NextResponse.json({
-        response: "عذراً، حدث خطأ في النظام. يرجى المحاولة مرة أخرى.",
-        articles: [],
-        links: [],
-      })
-    }
+  if (keywords.length === 0) {
+    return []
   }
+
+  // Build a dynamic query to search for keywords in title, content, or keywords array
+  let query = supabase.from("legal_articles").select("*")
+
+  // Add OR conditions for each keyword
+  const orConditions = keywords
+    .map((keyword) => {
+      const lowerKeyword = keyword.toLowerCase()
+      return `title.ilike.%${lowerKeyword}%,content.ilike.%${lowerKeyword}%,keywords.cs.{${lowerKeyword}}`
+    })
+    .join(",")
+
+  query = query.or(orConditions)
+  query = query.limit(3) // Limit to top 3 relevant articles
+
+  const { data, error } = await query
+
+  if (error) {
+    console.error("Error fetching legal articles from Supabase:", error)
+    return []
+  }
+
+  return data || []
 }
 
-function analyzeQuestion(question: string) {
-  const lowerQuestion = question.toLowerCase()
-  let sector = "general"
-  let articles: string[] = []
-  let links: { title: string; url: string }[] = []
-
-  // تحليل قطاع العمل
-  if (
-    lowerQuestion.includes("عمل") ||
-    lowerQuestion.includes("موظف") ||
-    lowerQuestion.includes("راتب") ||
-    lowerQuestion.includes("ساعة") ||
-    lowerQuestion.includes("دوام") ||
-    lowerQuestion.includes("إجازة") ||
-    lowerQuestion.includes("اجازة")
-  ) {
-    sector = "labor"
-
-    if (lowerQuestion.includes("ساعة") || lowerQuestion.includes("دوام")) {
-      articles.push("المادة 97", "المادة 98")
-    }
-    if (lowerQuestion.includes("إضافي") || lowerQuestion.includes("اضافي")) {
-      articles.push("المادة 99")
-    }
-    if (lowerQuestion.includes("إجازة") || lowerQuestion.includes("اجازة")) {
-      articles.push("المادة 109")
-    }
-
-    links = officialLinks.labor || []
-  }
-
-  // تحليل القطاع الصحي
-  else if (
-    lowerQuestion.includes("صحة") ||
-    lowerQuestion.includes("مريض") ||
-    lowerQuestion.includes("مستشفى") ||
-    lowerQuestion.includes("طبيب") ||
-    lowerQuestion.includes("علاج")
-  ) {
-    sector = "health"
-    articles = ["المادة 5", "المادة 6"]
-
-    if (lowerQuestion.includes("تأمين")) {
-      articles.push("المادة 12")
-    }
-
-    links = officialLinks.health || []
-  }
-
-  // تحليل قطاع المرور
-  else if (
-    lowerQuestion.includes("مرور") ||
-    lowerQuestion.includes("قيادة") ||
-    lowerQuestion.includes("مخالفة") ||
-    lowerQuestion.includes("رخصة") ||
-    lowerQuestion.includes("سيارة")
-  ) {
-    sector = "traffic"
-    articles = ["المادة 15"]
-    links = officialLinks.traffic || []
-  }
-
-  // تحليل الأحوال المدنية
-  else if (
-    lowerQuestion.includes("هوية") ||
-    lowerQuestion.includes("جواز") ||
-    lowerQuestion.includes("ميلاد") ||
-    lowerQuestion.includes("زواج") ||
-    lowerQuestion.includes("طلاق")
-  ) {
-    sector = "civil"
-    links = officialLinks.civil || []
-  }
-
-  // تحليل حماية المستهلك
-  else if (
-    lowerQuestion.includes("مستهلك") ||
-    lowerQuestion.includes("شراء") ||
-    lowerQuestion.includes("ضمان") ||
-    lowerQuestion.includes("متجر") ||
-    lowerQuestion.includes("منتج")
-  ) {
-    sector = "consumer"
-    links = officialLinks.consumer || []
-  }
-
-  return { sector, articles: [...new Set(articles)], links }
+function getSupabaseServerClient() {
+  // Placeholder for the actual implementation
+  return {}
 }
 
-// أضف هذه الدالة الجديدة بعد دالة analyzeQuestion
-
+// Function to get official complaint links based on the sector
 function getOfficialComplaintLinks(sector: string) {
   const complaintLinks = {
     labor: [
@@ -291,129 +160,21 @@ function getOfficialComplaintLinks(sector: string) {
   return complaintLinks[sector] || complaintLinks.general
 }
 
-// عدّل دالة generateOpenAIResponse لتشمل الروابط الرسمية
-
-async function generateOpenAIResponse(question: string, analysis: any) {
-  const officialLinks = getOfficialComplaintLinks(analysis.sector)
-
-  const systemPrompt = `أنت مستشار قانوني رسمي متخصص في الأنظمة والقوانين السعودية واسمك "مستشار اعرف حقوقك". أنت تقدم استشارات قانونية رسمية وموثقة.
-
-## مهمتك الأساسية:
-تقديم استشارات قانونية رسمية ودقيقة للمواطنين والمقيمين مع الاستشهاد بالمواد النظامية والإرشاد للجهات الرسمية المختصة.
-
-## قواعد الاستشارة الرسمية:
-1. **الطابع الرسمي**: استخدم لغة قانونية رسمية ودقيقة
-2. **الاستشهاد الدقيق**: اذكر رقم المادة والنظام المرجعي بدقة
-3. **التوثيق**: قدم مراجع قانونية موثقة
-4. **الإرشاد الرسمي**: وجه السائل للجهات الرسمية المختصة
-5. **الشمولية**: قدم استشارة شاملة تغطي جميع جوانب المسألة
-6. **التحذيرات القانونية**: اذكر العواقب القانونية والمهل الزمنية
-
-## المراجع القانونية الأساسية:
-
-### النظام الأساسي للحكم:
-- المادة 26: الدولة تحمي حقوق الإنسان وفق الشريعة الإسلامية
-- المادة 36: توفر الدولة الأمن لجميع مواطنيها والمقيمين
-- المادة 46: القضاء سلطة مستقلة ولا سلطان عليه لغير أحكام الشريعة
-
-### نظام العمل:
-- المادة 97: ساعات العمل اليومية والأسبوعية
-- المادة 98: فترات الراحة الإجبارية
-- المادة 99: العمل الإضافي والأجور
-- المادة 74: حق العامل في الراتب
-- المادة 80: حماية العامل من الفصل التعسفي
-
-## تنسيق الاستشارة الرسمية:
-1. **عنوان الاستشارة**: حدد موضوع الاستشارة
-2. **التكييف القانوني**: حدد النظام المطبق
-3. **المواد النظامية**: اذكر المواد ذات العلاقة
-4. **التحليل القانوني**: اشرح الوضع القانوني
-5. **الحقوق والواجبات**: حدد حقوق وواجبات كل طرف
-6. **الإجراءات المطلوبة**: حدد الخطوات العملية
-7. **الجهات المختصة**: اذكر الجهات الرسمية للشكوى
-8. **المهل الزمنية**: اذكر المهل القانونية المهمة
-9. **التوصيات**: قدم توصيات عملية
-
-## الجهات الرسمية المتاحة للشكوى:
-${officialLinks.map((link) => `- ${link.title}: ${link.url} | هاتف: ${link.phone}`).join("\n")}
-
-## مثال على الاستشارة الرسمية:
-"📋 **استشارة قانونية رسمية**
-**الموضوع:** مخالفة ساعات العمل
-**التكييف القانوني:** وفقاً لنظام العمل السعودي
-**المواد النظامية:** المادة 97، 98، 99
-**التحليل القانوني:** [تحليل مفصل]
-**الحقوق:** [حقوق العامل]
-**الإجراءات:** [خطوات الشكوى]
-**الجهات المختصة:** [قائمة الجهات]"
-
-السؤال: ${question}`
-
-  // باقي الكود يبقى كما هو...
-  try {
-    const response = await fetch(OPENROUTER_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://knowyourrights.sa",
-        "X-Title": "Know Your Rights - AI Legal Assistant",
-      },
-      body: JSON.stringify({
-        model: "openai/gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: systemPrompt,
-          },
-          {
-            role: "user",
-            content: question,
-          },
-        ],
-        temperature: 0.2, // خفضت أكثر للحصول على إجابات أكثر رسمية ودقة
-        max_tokens: 1500, // زدت للحصول على استشارات أكثر تفصيلاً
-        top_p: 0.8,
-        frequency_penalty: 0.3,
-        presence_penalty: 0.1,
-      }),
-    })
-
-    if (!response.ok) {
-      console.error("OpenRouter API Error:", response.status, response.statusText)
-      const errorText = await response.text()
-      console.error("Error details:", errorText)
-      return getDetailedLocalResponse(question, analysis)
-    }
-
-    const data = await response.json()
-
-    if (data.choices && data.choices[0] && data.choices[0].message) {
-      return data.choices[0].message.content
-    } else {
-      console.error("Unexpected API response structure:", data)
-      return getDetailedLocalResponse(question, analysis)
-    }
-  } catch (error) {
-    console.error("OpenRouter API Error:", error)
-    return getDetailedLocalResponse(question, analysis)
-  }
-}
-
+// Function to generate a detailed local response based on the question
 function getDetailedLocalResponse(question: string, analysis: any) {
   const lowerQuestion = question.toLowerCase()
 
-  // أسئلة العمل - ساعات العمل
+  // Questions about work hours
   if (lowerQuestion.includes("ساعة") || lowerQuestion.includes("دوام")) {
     if (lowerQuestion.includes("12") || lowerQuestion.includes("١٢")) {
       return `⚠️ **تنبيه مهم: العمل 12 ساعة يومياً مخالف للنظام!**
 
 📋 **المادة 97 من نظام العمل السعودي:**
 • الحد الأقصى للعمل: **8 ساعات يومياً** أو **48 ساعة أسبوعياً**
-• يمكن زيادة العمل إلى 9 ساعات في بعض الحالات الاستثنائية فقط
+• يمكن زيادة العمل إلى **9 ساعات** في بعض الحالات الاستثنائية فقط
 
 📋 **المادة 98 - فترات الراحة الإجبارية:**
-• يجب إعطاء راحة **نصف ساعة** كل **5 ساعات** عمل متتالية
+• يجب إعطاء راحة **نصف ساعة** خلال فترة العمل إذا زادت عن خمس ساعات متتالية
 • فترة الراحة لا تحتسب من ساعات العمل
 
 📋 **المادة 99 - العمل الإضافي:**
@@ -440,7 +201,7 @@ function getDetailedLocalResponse(question: string, analysis: any) {
 • يمكن زيادة العمل إلى **9 ساعات** في حالات خاصة محددة بالنظام
 
 📋 **المادة 98 - فترات الراحة الإجبارية:**
-• راحة **نصف ساعة** كل **5 ساعات** عمل متتالية
+• راحة **نصف ساعة** كل **5 ساعات** عمل متتالي
 • لا تحتسب فترة الراحة من ساعات العمل
 • هذه الراحة **حق إجباري** وليس اختياري
 
@@ -455,7 +216,7 @@ function getDetailedLocalResponse(question: string, analysis: any) {
 • لا تتردد في المطالبة بحقوقك`
   }
 
-  // أسئلة الإجازات
+  // Questions about leave
   if (lowerQuestion.includes("إجازة") || lowerQuestion.includes("اجازة")) {
     return `🏖️ **حقوق الإجازات في نظام العمل السعودي:**
 
@@ -478,7 +239,7 @@ function getDetailedLocalResponse(question: string, analysis: any) {
 📞 **للاستفسار:** وزارة الموارد البشرية - منصة قوى`
   }
 
-  // أسئلة الصحة
+  // Questions about health
   if (lowerQuestion.includes("مريض") || lowerQuestion.includes("صحة") || lowerQuestion.includes("مستشفى")) {
     return `🏥 **حقوق المريض في النظام الصحي السعودي:**
 
@@ -510,7 +271,7 @@ function getDetailedLocalResponse(question: string, analysis: any) {
 • منصة صحة الإلكترونية`
   }
 
-  // أسئلة المرور
+  // Questions about traffic
   if (lowerQuestion.includes("مرور") || lowerQuestion.includes("قيادة") || lowerQuestion.includes("مخالفة")) {
     return `🚗 **قوانين المرور في المملكة العربية السعودية:**
 
@@ -542,10 +303,10 @@ function getDetailedLocalResponse(question: string, analysis: any) {
 • راجع مخالفاتك دورياً`
   }
 
-  // رد عام للأسئلة غير المحددة
+  // General response for unspecified questions
   return `مرحباً بك في "اعرف حقوقك" 👋
 
-🤖 **أنا هنا لتقديم الاستشارات القانونية ومساعدتك في فهم حقوقك وواجباتك وفقاً للأنظمة السعودية**
+**أنا هنا لتقديم الاستشارات القانونية ومساعدتك في فهم حقوقك وواجباتك وفقاً للأنظمة السعودية**
 
 📚 **يمكنني مساعدتك في المجالات التالية:**
 
@@ -578,4 +339,53 @@ function getDetailedLocalResponse(question: string, analysis: any) {
 💡 **اكتب سؤالك بوضوح وسأقدم لك استشارة مفصلة مع المواد النظامية ذات الصلة وروابط الجهات المختصة.**
 
 مثال: "أعمل 12 ساعة يومياً، هل هذا قانوني؟"`
+}
+
+export async function POST(req: NextRequest) {
+  const { messages } = await req.json()
+  const lastUserMessage = messages[messages.length - 1]?.content || ""
+
+  const cookieStore = cookies()
+  const supabase = createServerClient(cookieStore)
+
+  let contextArticles: LegalArticle[] = []
+  try {
+    // Fetch relevant legal articles from Supabase based on the user's query
+    // This is a simplified example. In a real RAG setup, you'd perform a vector similarity search.
+    const { data, error } = await supabase
+      .from("legal_articles")
+      .select("id, title, content")
+      .ilike("content", `%${lastUserMessage.split(" ").slice(0, 3).join(" ")}%`) // Simple keyword search for demonstration
+      .limit(3)
+
+    if (error) {
+      console.error("Error fetching legal articles from Supabase:", error)
+    } else {
+      contextArticles = data || []
+    }
+  } catch (e) {
+    console.error("Error in Supabase query:", e)
+  }
+
+  const context = contextArticles
+    .map((article) => `Article Title: ${article.title}\nArticle Content: ${article.content}`)
+    .join("\n\n")
+
+  const systemPrompt = `أنت مستشار قانوني خبير في القانون السعودي. مهمتك هي تقديم استشارات قانونية دقيقة ومفيدة بناءً على المعلومات المتاحة.
+  إذا كانت لديك معلومات سياقية ذات صلة، فاستخدمها لتعزيز إجابتك.
+  المعلومات السياقية:
+  ${context}`
+
+  try {
+    const result = await generateText({
+      model: openai("gpt-4o"),
+      system: systemPrompt,
+      messages,
+    })
+
+    return new NextResponse(result.toReadableStream())
+  } catch (error) {
+    console.error("Error generating text:", error)
+    return NextResponse.json({ error: "Failed to generate response" }, { status: 500 })
+  }
 }
